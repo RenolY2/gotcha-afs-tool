@@ -4,17 +4,20 @@ import time
 import datetime
 from io import BytesIO
 
+
 def read_uint32(f):
     return struct.unpack("I", f.read(4))[0]
+
 
 def write_uint32(f, val):
     f.write(struct.pack("I", val))
 
 
-def write_pad2048(f):
-    next_aligned_pos = (f.tell() + 2047) & ~2047
+def write_pad2048(f, padding):
+    next_aligned_pos = (f.tell() + (padding-1)) & ~(padding-1)
 
     f.write(b"\x00"*(next_aligned_pos - f.tell()))
+    
     
 class Date(object):
     def __init__(self):
@@ -102,7 +105,7 @@ class GotchaAFS(object):
                 line = line.strip()
                 filename, timestamp = line.split(";;")
                 filename = filename.strip()
-                
+                print("Loading", filename)
                 entry.name = filename
                 
                 timestamp = timestamp.split(" ")
@@ -149,16 +152,16 @@ class GotchaAFS(object):
                     datetime.year, datetime.month, datetime.day, datetime.hour, datetime.minute, datetime.second))
                 f.write("\n")
     
-    def write(self, f):
+    def write(self, f, padding=2048):
         f.write(b"AFS\x00")
         write_uint32(f, len(self.entries))
-        f.write(b"\x00"*(0x80000-8))
+        f.write(b"\x00"*((self._fileinfo_offset+8)-8))
         
         for entry in self.entries:
             offset = f.tell()
             entry._offset = offset
             f.write(entry.data.getvalue())
-            write_pad2048(f)
+            write_pad2048(f, padding)
         
         fileinfo_offset = f.tell()
         for entry in self.entries:
@@ -173,7 +176,7 @@ class GotchaAFS(object):
             write_uint32(f, len(entry.data.getvalue()))
         
         fileinfo_size = f.tell()-fileinfo_offset
-        write_pad2048(f)
+        write_pad2048(f, padding)
         
         f.seek(self._fileinfo_offset)
         write_uint32(f, fileinfo_offset)
@@ -184,28 +187,73 @@ class GotchaAFS(object):
             write_uint32(f, entry._offset)
             write_uint32(f, len(entry.data.getvalue()))
         
-        
+
+def is_multiple_of_2(val):
+    if val == 2.0:
+        return True
+    else:
+        return is_multiple_of_2(val/2.0)
+
             
 if __name__ == "__main__":
+    import argparse
+    import os
+    import math 
+    
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("input",
+                        help="Path to AFS file to be unpacked or folder to be packed.")
+    parser.add_argument("--padding", default=2048, type=int,
+                        help="Data padding, must be a power of 2.")
+    #parser.add_argument("--datastart", default=0x80000, type=int,
+    #                    help="Start of file data.")
+    parser.add_argument("output", default=None, nargs = '?',
+                        help="Output path of extracted folder or new AFS.")
     #with open("afs_data.afs", "rb") as f:
     #    afs = GotchaAFS.from_file(f)
+    args = parser.parse_args()
     
+    if not is_multiple_of_2(args.padding):
+        raise RuntimeError("Padding must be power of 2!")
     
-    #afs.dump_to_folder("extracted/")
-    newafs = GotchaAFS.from_folder("extracted/")
-    with open("newafs.afs", "wb") as f:
-        newafs.write(f)
-    """for i, entry in enumerate(entries):
-            with open("extracted/file_{0}.bin".format(i), "wb") as g:
-                f.seek(entry.offset)
-                g.write(f.read(entry.size))"""
-    """    
-    with open("afs_files.txt", "w") as f:
-        for entry in entries:
-            if entry.name != "":
-                f.write(entry.name)
-                f.write("\n")"""
-                
+    #if args.datastart % args.padding != 0:
+    #    raise RuntimeError("Data start must be a multiple of the padding!")
+        
+    inputpath = os.path.normpath(args.input)
+    if os.path.isdir(inputpath):
+        dir2afs = True
+    else:
+        dir2afs = False
+    
+    if dir2afs:
+        print("Loading input folder...")
+        newafs = GotchaAFS.from_folder(inputpath)
+        print("Loaded. Writing new AFS...")
+        
+        if args.output is None:
+            outputpath = inputpath+".afs"
+        else:
+            outputpath = args.output 
+        
+        with open(outputpath, "wb") as f:
+            newafs.write(f, args.padding)
+        print("Done!")
+    else:
+        print("Loading input AFS...")
+        with open(inputpath, "rb") as f:
+            afs = GotchaAFS.from_file(f)
+            
+        print("AFS loaded, dumping to folder...")
+        
+        if args.output is None:
+            outputpath = inputpath+"_ext"
+        else:
+            outputpath = args.output 
+            
+        os.makedirs(outputpath, exist_ok=True)
+        afs.dump_to_folder(outputpath)
+        print("Done!")
         
         
         
